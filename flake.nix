@@ -25,12 +25,19 @@
             pkg-config
             libtool
             fontconfig
+
+            vulkan-loader.out
+            xorg.libX11.out
+            xorg.libXcursor.out
+            xorg.libXrandr.out
+            xorg.libXi.out
+
             rust-bin.stable.latest.complete
 
           ];
 
           shellHook = ''
-            LD_LIBRARY_PATH=$(nix eval --raw nixpkgs#vulkan-loader)/lib:$LD_LIBRARY_PATH
+            LD_LIBRARY_PATH=$(nix eval --raw nixpkgs#vulkan-loader.out)/lib:$LD_LIBRARY_PATH
             LD_LIBRARY_PATH=$(nix eval --raw nixpkgs#xorg.libX11.out)/lib:$LD_LIBRARY_PATH
             LD_LIBRARY_PATH=$(nix eval --raw nixpkgs#xorg.libXcursor.out)/lib:$LD_LIBRARY_PATH
             LD_LIBRARY_PATH=$(nix eval --raw nixpkgs#xorg.libXrandr.out)/lib:$LD_LIBRARY_PATH
