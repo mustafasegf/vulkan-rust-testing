@@ -8,6 +8,10 @@ edition = "2021"
 name = "triangle"
 path = "src/triangle.rs"
 
+[[bin]]
+name = "rectangle"
+path = "src/rectangle.rs"
+
 [dependencies]
 bytemuck = { version = "1.13.0", features = ["derive", "extern_crate_std", "min_const_generics"] }
 cgmath = "0.18.0"
