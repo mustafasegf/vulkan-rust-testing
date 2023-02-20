@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use bytemuck::{Pod, Zeroable};
-use cgmath::{Matrix4, Rad, Point3, Vector3};
+use cgmath::{Matrix4, Point3, Rad, Vector3};
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
@@ -210,15 +210,16 @@ fn main() {
             layout(location = 0) out vec3 v_color;
 
             layout (push_constant) uniform PushConstants {
-                mat4 world;
-                mat4 view;
+                float time;
             } push;
 
             void main() {
                 v_color = color;
-                mat4 worldview = push.view * push.world;
-                v_normal = transpose(inverse(mat3(worldview))) * normal;
-                gl_Position = worldview * vec4(position, 1.0);
+                float s = sin(push.time);
+                float c = cos(push.time);
+
+                mat2 rot = mat2(c, -s, s, c);
+                gl_Position =  vec4(rot * position, 0.0, 1.0);
             }",
             types_meta: {
                 use bytemuck::{Pod, Zeroable};
@@ -348,10 +349,7 @@ fn main() {
             );
 
             let fs_push_constants = fs::ty::PushConstants { time };
-            let vs_push_constants = vs::ty::PushConstants {
-                world: rotation.into(),
-                view: view.into(),
-            };
+            let vs_push_constants = vs::ty::PushConstants { time: time/2.0 };
 
             previous_frame_end
                 .as_mut()
