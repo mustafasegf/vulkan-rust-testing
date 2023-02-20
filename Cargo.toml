@@ -13,8 +13,8 @@ name = "rectangle"
 path = "src/rectangle.rs"
 
 [[bin]]
-name = "rotating"
-path = "src/rotating-image.rs"
+name = "rotating-rectangle"
+path = "src/rotating-rectangle.rs"
 
 [dependencies]
 bytemuck = { version = "1.13.0", features = ["derive", "extern_crate_std", "min_const_generics"] }
