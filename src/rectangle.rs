@@ -195,7 +195,6 @@ fn main() {
         indicies,
     ).expect("can't create index buffer");
 
-    let time = 1;
     mod vs {
         vulkano_shaders::shader! {
             ty: "vertex",
@@ -293,7 +292,6 @@ fn main() {
     let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
 
     let start_time = SystemTime::now();
-    let mut last_frame_time = start_time;
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {

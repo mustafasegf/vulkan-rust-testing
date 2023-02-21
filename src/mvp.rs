@@ -394,7 +394,7 @@ fn main() {
                 return;
             }
 
-            let ortho = cgmath::ortho(
+            let proj = cgmath::ortho(
                 0.0,
                 dimensions.width as f32,
                 0.0,
@@ -402,9 +402,11 @@ fn main() {
                 -1.0,
                 1.0,
             );
+            dbg!(&proj.x);
+            dbg!(&proj.y);
             let view = cgmath::Matrix4::from_translation(cgmath::Vector3::new(100.0, 0.0, 0.0));
             let model = cgmath::Matrix4::from_translation(cgmath::Vector3::new(-200.0, 0.0, 0.0));
-            let mvp = ortho * view * model;
+            let mvp = proj * view * model;
 
             let push_constants = vs::ty::PushConstants { proj: mvp.into() };
 
