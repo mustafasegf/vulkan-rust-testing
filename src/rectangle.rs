@@ -322,8 +322,6 @@ fn main() {
             // Update per-frame variables.
             let now = SystemTime::now();
             let mut time = now.duration_since(start_time).unwrap().as_secs_f32();
-            let delta_time = now.duration_since(last_frame_time).unwrap().as_secs_f32();
-            last_frame_time = now;
 
             let push_constants = fs::ty::PushConstants { time };
 

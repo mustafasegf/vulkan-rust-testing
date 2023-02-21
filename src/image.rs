@@ -2,7 +2,6 @@
 
 use std::io::Cursor;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use bytemuck::{Pod, Zeroable};
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess};
@@ -355,9 +354,6 @@ fn main() {
         [WriteDescriptorSet::image_view_sampler(0, texture, sampler)],
     )
     .unwrap();
-
-    let start_time = SystemTime::now();
-    let mut last_frame_time = start_time;
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {

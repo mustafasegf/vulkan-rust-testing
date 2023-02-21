@@ -2,7 +2,6 @@
 
 use std::io::Cursor;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use bytemuck::{Pod, Zeroable};
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess};
@@ -371,7 +370,6 @@ fn main() {
     )
     .unwrap();
 
-    let start_time = SystemTime::now();
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
