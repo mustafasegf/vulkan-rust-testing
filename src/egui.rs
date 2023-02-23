@@ -58,6 +58,10 @@ pub fn main() {
         .unwrap()
         .swapchain_format();
 
+    let renderer = windows.get_primary_renderer_mut().unwrap();
+    let image = renderer.swapchain_image_view();
+    let dimensions = image.image().dimensions().width_height();
+
     let memory_allocator = context.memory_allocator();
 
     #[repr(C)]
@@ -162,7 +166,20 @@ pub fn main() {
         })
         .build(queue.device().clone())
         .unwrap();
-
+    let mut viewport = Viewport {
+        origin: [0.0, 0.0],
+        dimensions: [dimensions[0] as f32, dimensions[1] as f32],
+        // dimensions: [0.0, 0.0],
+        depth_range: 0.0..1.0,
+    };
+    let mut framebuffer = Framebuffer::new(
+        render_pass.clone(),
+        FramebufferCreateInfo {
+            attachments: vec![image],
+            ..Default::default()
+        },
+    )
+    .unwrap();
     // Create an allocator for command-buffer data
     let command_buffer_allocator =
         StandardCommandBufferAllocator::new(queue.device().clone(), Default::default());
@@ -182,9 +199,11 @@ pub fn main() {
     let mut open_gui = true;
     let mut view = 0;
 
+    let mut recreate_swapchain = false;
     // Create gui state (pass anything your state requires)
     event_loop.run(move |event, _, control_flow| {
         let renderer = windows.get_primary_renderer_mut().unwrap();
+
         match event {
             Event::WindowEvent { event, window_id } if window_id == renderer.window().id() => {
                 // Update Egui integration so the UI works!
@@ -192,9 +211,11 @@ pub fn main() {
                 match event {
                     WindowEvent::Resized(_) => {
                         renderer.resize();
+                        recreate_swapchain = true;
                     }
                     WindowEvent::ScaleFactorChanged { .. } => {
                         renderer.resize();
+                        recreate_swapchain = true;
                     }
                     WindowEvent::CloseRequested => {
                         *control_flow = ControlFlow::Exit;
@@ -213,9 +234,10 @@ pub fn main() {
                             ui.add(Slider::new(&mut view, -200..=200).text("age"));
                         });
                 });
-                let before_future = renderer.acquire().unwrap();
 
+                let before_future = renderer.acquire().unwrap();
                 let image = renderer.swapchain_image_view();
+
                 let mut builder = AutoCommandBufferBuilder::primary(
                     &command_buffer_allocator,
                     queue.queue_family_index(),
@@ -224,21 +246,27 @@ pub fn main() {
                 .unwrap();
 
                 let dimensions = image.image().dimensions().width_height();
-                let framebuffer = Framebuffer::new(
-                    render_pass.clone(),
-                    FramebufferCreateInfo {
-                        attachments: vec![image],
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
+                viewport.dimensions = [dimensions[0] as f32, dimensions[1] as f32];
+
+                if recreate_swapchain {
+                    framebuffer = Framebuffer::new(
+                        render_pass.clone(),
+                        FramebufferCreateInfo {
+                            attachments: vec![image],
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+
+                    recreate_swapchain = false;
+                };
 
                 // Begin render pipeline commands
                 builder
                     .begin_render_pass(
                         RenderPassBeginInfo {
                             clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
-                            ..RenderPassBeginInfo::framebuffer(framebuffer)
+                            ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
                         },
                         SubpassContents::SecondaryCommandBuffers,
                     )
@@ -255,19 +283,14 @@ pub fn main() {
                     },
                 )
                 .unwrap();
+
                 secondary_builder
                     .bind_pipeline_graphics(pipeline.clone())
-                    .set_viewport(
-                        0,
-                        vec![Viewport {
-                            origin: [0.0, 0.0],
-                            dimensions: [dimensions[0] as f32, dimensions[1] as f32],
-                            depth_range: 0.0..1.0,
-                        }],
-                    )
+                    .set_viewport(0, [viewport.clone()])
                     .bind_vertex_buffers(0, vertex_buffer.clone())
                     .draw(vertex_buffer.len() as u32, 1, 0, 0)
                     .unwrap();
+
                 let cb = secondary_builder.build().unwrap();
                 builder.execute_commands(cb).unwrap();
 
@@ -281,6 +304,7 @@ pub fn main() {
 
                 // Last end render pass
                 builder.end_render_pass().unwrap();
+
                 let command_buffer = builder.build().unwrap();
                 let after_future = before_future
                     .then_execute(queue.clone(), command_buffer)
