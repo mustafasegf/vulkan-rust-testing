@@ -219,11 +219,11 @@ fn main() {
             layout(location = 0) out vec2 v_tex_coords;
 
             layout (push_constant) uniform PushConstants {
-                mat4 proj;
+                mat4 mvp;
             } push;
 
             void main() {
-                gl_Position = push.proj * vec4(position, 0.0, 1.0);
+                gl_Position = push.mvp * vec4(position, 0.0, 1.0);
                 v_tex_coords = tex_coords;
             }",
             types_meta: {
@@ -402,13 +402,12 @@ fn main() {
                 -1.0,
                 1.0,
             );
-            dbg!(&proj.x);
-            dbg!(&proj.y);
+
             let view = cgmath::Matrix4::from_translation(cgmath::Vector3::new(100.0, 0.0, 0.0));
             let model = cgmath::Matrix4::from_translation(cgmath::Vector3::new(-200.0, 0.0, 0.0));
             let mvp = proj * view * model;
 
-            let push_constants = vs::ty::PushConstants { proj: mvp.into() };
+            let push_constants = vs::ty::PushConstants { mvp: mvp.into() };
 
             previous_frame_end
                 .as_mut()

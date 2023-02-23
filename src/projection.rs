@@ -395,7 +395,7 @@ fn main() {
                 return;
             }
 
-            let ortho = cgmath::ortho(
+            let proj = cgmath::ortho(
                 0.0,
                 dimensions.width as f32,
                 0.0,
@@ -404,7 +404,7 @@ fn main() {
                 1.0
             );
 
-            let push_constants = vs::ty::PushConstants { proj: ortho.into() };
+            let push_constants = vs::ty::PushConstants { proj: proj.into() };
 
             previous_frame_end
                 .as_mut()
