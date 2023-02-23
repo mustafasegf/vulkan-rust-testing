@@ -262,23 +262,6 @@ fn main() {
     let vs = vs::load(device.clone()).expect("can't load vertex shader");
     let fs = fs::load(device.clone()).expect("can't load fragment shader");
 
-    // let render_pass = vulkano::single_pass_renderpass!(
-    //     device.clone(),
-    //     attachments: {
-    //         color: {
-    //             load: Clear,
-    //             store: Store,
-    //             format: swapchain.image_format(),
-    //             samples: 1,
-    //         }
-    //     },
-    //     pass: {
-    //         color: [color],
-    //         depth_stencil: {}
-    //     }
-    // )
-    // .expect("can't create render pass");
-
     let render_pass = vulkano::ordered_passes_renderpass!(
         queue.device().clone(),
         attachments: {
@@ -391,13 +374,6 @@ fn main() {
     )
     .unwrap();
 
-    // let mut gui = Gui::new(
-    //     &event_loop,
-    //     surface.clone(),
-    //     queue.clone(),
-    //     GuiConfig::default(),
-    // );
-
     let mut gui = Gui::new_with_subpass(
         &event_loop,
         surface.clone(),
@@ -406,7 +382,16 @@ fn main() {
         GuiConfig::default(),
     );
 
-    let mut view_slider = 0.0;
+    struct GuiState {
+        view_slider_x: f32,
+        view_slider_y: f32,
+        view_slider_z: f32,
+    };
+    let mut gui_state = GuiState {
+        view_slider_x: 0.0,
+        view_slider_y: 0.0,
+        view_slider_z: 0.0,
+    };
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent { event, window_id } => {
@@ -426,17 +411,6 @@ fn main() {
             }
         }
         Event::RedrawEventsCleared => {
-            gui.immediate_ui(|gui| {
-                let ctx = gui.context();
-                egui::Window::new("Transparent Window")
-                    // .open(&mut open_gui)
-                    .default_width(300.0)
-                    .show(&ctx, |ui| {
-                        ui.heading("egui");
-                        ui.add(Slider::new(&mut view_slider, -200.0..=200.0).text("position"));
-                    });
-            });
-
             let window = surface
                 .object()
                 .expect("can't create surface object")
@@ -447,6 +421,34 @@ fn main() {
                 return;
             }
 
+            gui.immediate_ui(|gui| {
+                let ctx = gui.context();
+                egui::Window::new("Debug Window")
+                    // .open(&mut open_gui)
+                    .default_width(300.0)
+                    .show(&ctx, |ui| {
+                        ui.add(
+                            Slider::new(
+                                &mut gui_state.view_slider_x,
+                                -(dimensions.width as f32)..=(dimensions.width as f32),
+                            )
+                            .text("position x"),
+                        );
+                        ui.add(
+                            Slider::new(
+                                &mut gui_state.view_slider_y,
+                                -(dimensions.height as f32)..=(dimensions.height as f32),
+                            )
+                            .text("position y"),
+                        );
+
+                        ui.add(
+                            Slider::new(&mut gui_state.view_slider_z, -10.0..=10.0)
+                                .text("position z"),
+                        );
+                    });
+            });
+
             let proj_m = cgmath::ortho(
                 0.0,
                 dimensions.width as f32,
@@ -456,7 +458,11 @@ fn main() {
                 1.0,
             );
 
-            let view_m = cgmath::Matrix4::from_translation(cgmath::Vector3::new(view_slider, 0.0, 0.0));
+            let view_m = cgmath::Matrix4::from_translation(cgmath::Vector3::new(
+                gui_state.view_slider_x,
+                gui_state.view_slider_y,
+                gui_state.view_slider_z,
+            ));
             let model_m = cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 0.0, 0.0));
             let mvp = proj_m * view_m * model_m;
 
@@ -542,9 +548,7 @@ fn main() {
                 .bind_vertex_buffers(0, vertex_buffer.clone())
                 .bind_index_buffer(index_buffer.clone())
                 .draw_indexed(index_buffer.len() as u32, 1, 0, 0, 0)
-                .expect("can't draw")
-            ;
-
+                .expect("can't draw");
 
             let cb = secondary_builder.build().unwrap();
             builder.execute_commands(cb).unwrap();
@@ -616,5 +620,4 @@ fn window_size_dependent_setup(
             )
         })
         .unzip::<_, _, Vec<_>, Vec<_>>()
-    // .collect::<Vec<_>>()
 }
