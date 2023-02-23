@@ -1,119 +1,239 @@
 #![allow(dead_code, unused)]
-#![allow(clippy::eq_op)]
 
-use std::{convert::TryFrom, sync::Arc};
+use std::io::Cursor;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use egui::{
-    epaint::Shadow, style::Margin, vec2, Align, Align2, Color32, Frame, Rounding, Slider, Window,
-};
+use egui::Slider;
 use egui_winit_vulkano::{Gui, GuiConfig};
-use vulkano::{
-    buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
-    command_buffer::{
-        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder,
-        CommandBufferInheritanceInfo, CommandBufferUsage, RenderPassBeginInfo, SubpassContents,
-    },
-    device::{Device, Queue},
-    format::Format,
-    image::{ImageAccess, SampleCount},
-    memory::allocator::StandardMemoryAllocator,
-    pipeline::{
-        graphics::{
-            input_assembly::InputAssemblyState,
-            multisample::MultisampleState,
-            vertex_input::BuffersDefinition,
-            viewport::{Viewport, ViewportState},
+use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess};
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
+use vulkano::command_buffer::{
+    AutoCommandBufferBuilder, CommandBufferInheritanceInfo, CommandBufferUsage,
+    PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassContents,
+};
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
+use vulkano::device::physical::PhysicalDeviceType;
+use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo};
+use vulkano::format::Format;
+use vulkano::image::view::ImageView;
+use vulkano::image::{
+    ImageAccess, ImageDimensions, ImageUsage, ImmutableImage, MipmapsCount, SampleCount,
+    SwapchainImage,
+};
+use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::memory::allocator::StandardMemoryAllocator;
+use vulkano::pipeline::graphics::color_blend::ColorBlendState;
+use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
+use vulkano::pipeline::graphics::rasterization::{CullMode, FrontFace, RasterizationState};
+use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
+use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
+use vulkano::pipeline::Pipeline;
+use vulkano::pipeline::{GraphicsPipeline, PipelineBindPoint};
+use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
+use vulkano::sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo};
+use vulkano::swapchain::{
+    acquire_next_image, AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
+    SwapchainPresentInfo,
+};
+use vulkano::sync::{FlushError, GpuFuture};
+use vulkano::{impl_vertex, sync, VulkanLibrary};
+use vulkano_win::VkSurfaceBuild;
+use winit::event::{Event, WindowEvent};
+use winit::event_loop::EventLoop;
+use winit::window::{Window, WindowBuilder};
+
+fn main() {
+    let library = VulkanLibrary::new().expect("there's no Vulkan library");
+    let required_extensions = vulkano_win::required_extensions(&library);
+
+    let instance = Instance::new(
+        library,
+        InstanceCreateInfo {
+            enabled_extensions: required_extensions,
+            enumerate_portability: true,
+            ..Default::default()
         },
-        GraphicsPipeline,
-    },
-    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
-    sync::GpuFuture,
-};
-use vulkano_util::{
-    context::{VulkanoConfig, VulkanoContext},
-    renderer::SwapchainImageView,
-    window::{VulkanoWindows, WindowDescriptor},
-};
-use winit::{
-    event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-};
+    )
+    .expect("can't create instance");
 
-pub fn main() {
-    // Winit event loop
     let event_loop = EventLoop::new();
-    // Vulkano context
-    let context = VulkanoContext::new(VulkanoConfig::default());
-    // Vulkano windows (create one)
-    let mut windows = VulkanoWindows::default();
-    windows.create_window(&event_loop, &context, &WindowDescriptor::default(), |ci| {
-        ci.image_format = Some(vulkano::format::Format::B8G8R8A8_SRGB)
-    });
-    // Create out gui pipeline
-    //
-    let queue = context.graphics_queue().clone();
-    let image_format = windows
-        .get_primary_renderer_mut()
-        .unwrap()
-        .swapchain_format();
+    let surface = WindowBuilder::new()
+        .build_vk_surface(&event_loop, instance.clone())
+        .expect("can't create surface");
 
-    let renderer = windows.get_primary_renderer_mut().unwrap();
-    let image = renderer.swapchain_image_view();
-    let dimensions = image.image().dimensions().width_height();
+    let device_extensions = DeviceExtensions {
+        khr_swapchain: true,
+        ..DeviceExtensions::empty()
+    };
 
-    let memory_allocator = context.memory_allocator();
+    let (physical_device, queue_family_index) = instance
+        .enumerate_physical_devices()
+        .expect("can't enumerate physical devices")
+        .filter(|p| p.supported_extensions().contains(&device_extensions))
+        .filter_map(|p| {
+            p.queue_family_properties()
+                .iter()
+                .enumerate()
+                .position(|(i, q)| {
+                    q.queue_flags.graphics && p.surface_support(i as u32, &surface).unwrap_or(false)
+                })
+                .map(|i| (p, i as u32))
+        })
+        .min_by_key(|(p, _)| match p.properties().device_type {
+            PhysicalDeviceType::DiscreteGpu => 0,
+            PhysicalDeviceType::IntegratedGpu => 1,
+            PhysicalDeviceType::VirtualGpu => 2,
+            PhysicalDeviceType::Cpu => 3,
+            PhysicalDeviceType::Other => 4,
+            _ => 5,
+        })
+        .expect("No suitable physical device found");
+
+    println!(
+        "physical device: {:#?}",
+        physical_device.properties().device_name
+    );
+
+    let (device, mut queues) = Device::new(
+        physical_device,
+        DeviceCreateInfo {
+            enabled_extensions: device_extensions,
+            queue_create_infos: vec![QueueCreateInfo {
+                queue_family_index,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    )
+    .expect("can't create device");
+    let queue = queues.next().expect("can't get queue");
+
+    let (mut swapchain, images) = {
+        let surface_capabilities = device
+            .physical_device()
+            .surface_capabilities(&surface, Default::default())
+            .expect("can't get surface capabilities");
+
+        let image_format = Some(
+            device
+                .physical_device()
+                .surface_formats(&surface, Default::default())
+                .expect("can't create device")[0]
+                .0,
+        );
+        let window = surface
+            .object()
+            .expect("can't create surface object")
+            .downcast_ref::<Window>()
+            .expect("can't downcast surface object");
+
+        Swapchain::new(
+            device.clone(),
+            surface.clone(),
+            SwapchainCreateInfo {
+                min_image_count: surface_capabilities.min_image_count,
+                image_format,
+                image_extent: window.inner_size().into(),
+
+                image_usage: ImageUsage {
+                    color_attachment: true,
+                    ..Default::default()
+                },
+
+                composite_alpha: surface_capabilities
+                    .supported_composite_alpha
+                    .iter()
+                    .next()
+                    .expect("no supported composite alpha"),
+                ..Default::default()
+            },
+        )
+        .expect("can't create swapchain")
+    };
+
+    let memory_allocator = StandardMemoryAllocator::new_default(device.clone());
 
     #[repr(C)]
-    #[derive(Default, Debug, Copy, Clone, Zeroable, Pod)]
+    #[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
     struct Vertex {
         position: [f32; 2],
-        color: [f32; 4],
+        tex_coords: [f32; 2],
     }
 
-    vulkano::impl_vertex!(Vertex, position, color);
+    impl_vertex!(Vertex, position, tex_coords);
 
-    let vertecies = [
+    let vertices = [
         Vertex {
-            position: [-0.5, -0.25],
-            color: [1.0, 0.0, 0.0, 1.0],
+            position: [25.0, 25.0],
+            tex_coords: [0.0, 0.0],
         },
         Vertex {
-            position: [0.0, 0.5],
-            color: [0.0, 1.0, 0.0, 1.0],
+            position: [225.0, 25.0],
+            tex_coords: [1.0, 0.0],
         },
         Vertex {
-            position: [0.25, -0.1],
-            color: [0.0, 0.0, 1.0, 1.0],
+            position: [225.0, 225.0],
+            tex_coords: [1.0, 1.0],
+        },
+        Vertex {
+            position: [25.0, 225.0],
+            tex_coords: [0.0, 1.0],
         },
     ];
 
-    let vertex_buffer = {
-        CpuAccessibleBuffer::from_iter(
-            memory_allocator,
-            BufferUsage {
-                vertex_buffer: true,
-                ..BufferUsage::empty()
-            },
-            false,
-            vertecies,
-        )
-        .expect("failed to create buffer")
-    };
+    let indicies = [
+        0u16, 1, 2, //first triangle
+        2, 3, 0, //second triangle
+    ];
+
+    let vertex_buffer = CpuAccessibleBuffer::from_iter(
+        &memory_allocator,
+        BufferUsage {
+            vertex_buffer: true,
+            ..BufferUsage::empty()
+        },
+        false,
+        vertices,
+    )
+    .expect("can't create vertex buffer");
+
+    let index_buffer = CpuAccessibleBuffer::from_iter(
+        &memory_allocator,
+        BufferUsage {
+            index_buffer: true,
+            ..BufferUsage::empty()
+        },
+        false,
+        indicies,
+    )
+    .expect("can't create index buffer");
 
     mod vs {
         vulkano_shaders::shader! {
             ty: "vertex",
             src: "
-            #version 450
-            layout(location = 0) in vec2 position;
-            layout(location = 1) in vec4 color;
+			#version 450
 
-            layout(location = 0) out vec4 v_color;
+            layout(location = 0) in vec2 position;
+            layout(location = 1) in vec2 tex_coords;
+
+            layout(location = 0) out vec2 v_tex_coords;
+
+            layout (push_constant) uniform PushConstants {
+                mat4 mvp;
+            } push;
+
             void main() {
-                gl_Position = vec4(position, 0.0, 1.0);
-                v_color = color;
-            }"
+                gl_Position = push.mvp * vec4(position, 0.0, 1.0);
+                v_tex_coords = tex_coords;
+            }",
+            types_meta: {
+                use bytemuck::{Pod, Zeroable};
+
+                #[derive(Clone, Copy, Zeroable, Pod)]
+            },
         }
     }
 
@@ -121,18 +241,43 @@ pub fn main() {
         vulkano_shaders::shader! {
             ty: "fragment",
             src: "
-            #version 450
-            layout(location = 0) in vec4 v_color;
+			#version 450
+
+            layout(location = 0) in vec2 tex_coords;
 
             layout(location = 0) out vec4 f_color;
+            layout(set = 0, binding = 0) uniform sampler2D tex;
 
             void main() {
-                f_color = v_color;
-            }"
+                f_color = texture(tex, tex_coords);
+            }",
+            types_meta: {
+                use bytemuck::{Pod, Zeroable};
+
+                #[derive(Clone, Copy, Zeroable, Pod)]
+            },
         }
     }
-    let vs = vs::load(queue.device().clone()).expect("failed to create shader module");
-    let fs = fs::load(queue.device().clone()).expect("failed to create shader module");
+
+    let vs = vs::load(device.clone()).expect("can't load vertex shader");
+    let fs = fs::load(device.clone()).expect("can't load fragment shader");
+
+    // let render_pass = vulkano::single_pass_renderpass!(
+    //     device.clone(),
+    //     attachments: {
+    //         color: {
+    //             load: Clear,
+    //             store: Store,
+    //             format: swapchain.image_format(),
+    //             samples: 1,
+    //         }
+    //     },
+    //     pass: {
+    //         color: [color],
+    //         depth_stencil: {}
+    //     }
+    // )
+    // .expect("can't create render pass");
 
     let render_pass = vulkano::ordered_passes_renderpass!(
         queue.device().clone(),
@@ -140,7 +285,7 @@ pub fn main() {
             color: {
                 load: Clear,
                 store: Store,
-                format: image_format,
+                format: swapchain.image_format(),
                 samples: SampleCount::Sample1,
             }
         },
@@ -151,173 +296,325 @@ pub fn main() {
     )
     .expect("can't create render pass");
 
-    let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
-
+    let subpass = Subpass::from(render_pass.clone(), 0).expect("can't create subpass");
     let pipeline = GraphicsPipeline::start()
         .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
-        .vertex_shader(vs.entry_point("main").unwrap(), ())
-        .input_assembly_state(InputAssemblyState::new())
-        .fragment_shader(fs.entry_point("main").unwrap(), ())
+        .vertex_shader(
+            vs.entry_point("main").expect("can't create vertex shader"),
+            (),
+        )
+        .input_assembly_state(InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip))
         .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+        .fragment_shader(
+            fs.entry_point("main")
+                .expect("can't create fragment shader"),
+            (),
+        )
+        .color_blend_state(ColorBlendState::new(subpass.num_color_attachments()).blend_alpha())
         .render_pass(subpass.clone())
-        .multisample_state(MultisampleState {
-            rasterization_samples: SampleCount::Sample1,
-            ..Default::default()
-        })
-        .build(queue.device().clone())
-        .unwrap();
+        .build(device.clone())
+        .expect("can't create graphics pipeline");
+
     let mut viewport = Viewport {
         origin: [0.0, 0.0],
-        dimensions: [dimensions[0] as f32, dimensions[1] as f32],
-        // dimensions: [0.0, 0.0],
+        dimensions: [0.0, 0.0],
         depth_range: 0.0..1.0,
     };
-    let mut framebuffer = Framebuffer::new(
-        render_pass.clone(),
-        FramebufferCreateInfo {
-            attachments: vec![image],
+
+    let (mut framebuffers, mut views) =
+        window_size_dependent_setup(&images, render_pass.clone(), &mut viewport);
+
+    let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone());
+    let command_buffer_allocator =
+        StandardCommandBufferAllocator::new(device.clone(), Default::default());
+
+    let mut uploads = AutoCommandBufferBuilder::primary(
+        &command_buffer_allocator,
+        queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .expect("can't create command buffer builder");
+
+    let texture = {
+        let png_bytes = include_bytes!("image.png").to_vec();
+        let cursor = Cursor::new(png_bytes);
+        let decoder = png::Decoder::new(cursor);
+        let mut reader = decoder.read_info().expect("can't read png info");
+        let info = reader.info();
+        let dimensions = ImageDimensions::Dim2d {
+            width: info.width,
+            height: info.height,
+            array_layers: 1,
+        };
+        let mut image_data = Vec::new();
+        image_data.resize((info.width * info.height * 4) as usize, 0);
+        reader.next_frame(&mut image_data).unwrap();
+
+        let image = ImmutableImage::from_iter(
+            &memory_allocator,
+            image_data,
+            dimensions,
+            MipmapsCount::One,
+            Format::R8G8B8A8_SRGB,
+            &mut uploads,
+        )
+        .expect("can't create image");
+        ImageView::new_default(image).expect("can't create image view")
+    };
+
+    let sampler = Sampler::new(
+        device.clone(),
+        SamplerCreateInfo {
+            mag_filter: Filter::Linear,
+            min_filter: Filter::Linear,
+            address_mode: [SamplerAddressMode::Repeat; 3],
             ..Default::default()
         },
     )
-    .unwrap();
-    // Create an allocator for command-buffer data
-    let command_buffer_allocator =
-        StandardCommandBufferAllocator::new(queue.device().clone(), Default::default());
-
-    // Create gui subpass
-    let mut gui = Gui::new_with_subpass(
-        &event_loop,
-        windows.get_primary_renderer_mut().unwrap().surface(),
-        windows.get_primary_renderer_mut().unwrap().graphics_queue(),
-        Subpass::from(render_pass.clone(), 1).unwrap(),
-        GuiConfig {
-            preferred_format: Some(vulkano::format::Format::B8G8R8A8_SRGB),
-            ..Default::default()
-        },
-    );
-
-    let mut open_gui = true;
-    let mut view = 0;
+    .expect("can't create sampler");
 
     let mut recreate_swapchain = false;
-    // Create gui state (pass anything your state requires)
-    event_loop.run(move |event, _, control_flow| {
-        let renderer = windows.get_primary_renderer_mut().unwrap();
+    let mut previous_frame_end = Some(
+        uploads
+            .build()
+            .unwrap()
+            .execute(queue.clone())
+            .unwrap()
+            .boxed(),
+    );
 
-        match event {
-            Event::WindowEvent { event, window_id } if window_id == renderer.window().id() => {
-                // Update Egui integration so the UI works!
-                let _pass_events_to_game = !gui.update(&event);
-                match event {
-                    WindowEvent::Resized(_) => {
-                        renderer.resize();
-                        recreate_swapchain = true;
-                    }
-                    WindowEvent::ScaleFactorChanged { .. } => {
-                        renderer.resize();
-                        recreate_swapchain = true;
-                    }
-                    WindowEvent::CloseRequested => {
-                        *control_flow = ControlFlow::Exit;
-                    }
-                    _ => (),
+    let layout = pipeline.layout().set_layouts().get(0).unwrap();
+    let set = PersistentDescriptorSet::new(
+        &descriptor_set_allocator,
+        layout.clone(),
+        [WriteDescriptorSet::image_view_sampler(0, texture, sampler)],
+    )
+    .unwrap();
+
+    // let mut gui = Gui::new(
+    //     &event_loop,
+    //     surface.clone(),
+    //     queue.clone(),
+    //     GuiConfig::default(),
+    // );
+
+    let mut gui = Gui::new_with_subpass(
+        &event_loop,
+        surface.clone(),
+        queue.clone(),
+        Subpass::from(render_pass.clone(), 1).expect("can't create subpass"),
+        GuiConfig::default(),
+    );
+
+    let mut view_slider = 0.0;
+
+    event_loop.run(move |event, _, control_flow| match event {
+        Event::WindowEvent { event, window_id } => {
+            let _pass_events_to_game = !gui.update(&event);
+
+            match event {
+                WindowEvent::Resized(_) => {
+                    recreate_swapchain = true;
                 }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    recreate_swapchain = true;
+                }
+                WindowEvent::CloseRequested => {
+                    *control_flow = winit::event_loop::ControlFlow::Exit;
+                }
+                _ => (),
             }
-            Event::RedrawRequested(window_id) if window_id == window_id => {
-                gui.immediate_ui(|gui| {
-                    let ctx = gui.context();
-                    Window::new("Transparent Window")
-                        .open(&mut open_gui)
-                        .default_width(300.0)
-                        .show(&ctx, |ui| {
-                            ui.heading("egui");
-                            ui.add(Slider::new(&mut view, -200..=200).text("age"));
-                        });
-                });
+        }
+        Event::RedrawEventsCleared => {
+            gui.immediate_ui(|gui| {
+                let ctx = gui.context();
+                egui::Window::new("Transparent Window")
+                    // .open(&mut open_gui)
+                    .default_width(300.0)
+                    .show(&ctx, |ui| {
+                        ui.heading("egui");
+                        ui.add(Slider::new(&mut view_slider, -200.0..=200.0).text("position"));
+                    });
+            });
 
-                let before_future = renderer.acquire().unwrap();
-                let image = renderer.swapchain_image_view();
+            let window = surface
+                .object()
+                .expect("can't create surface object")
+                .downcast_ref::<Window>()
+                .expect("can't downcast surface object");
+            let dimensions = window.inner_size();
+            if dimensions.width == 0 || dimensions.height == 0 {
+                return;
+            }
 
-                let mut builder = AutoCommandBufferBuilder::primary(
-                    &command_buffer_allocator,
-                    queue.queue_family_index(),
-                    CommandBufferUsage::OneTimeSubmit,
-                )
-                .unwrap();
+            let proj_m = cgmath::ortho(
+                0.0,
+                dimensions.width as f32,
+                0.0,
+                dimensions.height as f32,
+                -1.0,
+                1.0,
+            );
 
-                let dimensions = image.image().dimensions().width_height();
-                viewport.dimensions = [dimensions[0] as f32, dimensions[1] as f32];
+            let view_m = cgmath::Matrix4::from_translation(cgmath::Vector3::new(view_slider, 0.0, 0.0));
+            let model_m = cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 0.0, 0.0));
+            let mvp = proj_m * view_m * model_m;
 
-                if recreate_swapchain {
-                    framebuffer = Framebuffer::new(
-                        render_pass.clone(),
-                        FramebufferCreateInfo {
-                            attachments: vec![image],
-                            ..Default::default()
-                        },
-                    )
-                    .unwrap();
+            let push_constants = vs::ty::PushConstants { mvp: mvp.into() };
 
-                    recreate_swapchain = false;
+            previous_frame_end
+                .as_mut()
+                .expect("can't get previous_frame_end")
+                .cleanup_finished();
+
+            if recreate_swapchain {
+                let (new_swapchain, new_images) = match swapchain.recreate(SwapchainCreateInfo {
+                    image_extent: dimensions.into(),
+                    ..swapchain.create_info()
+                }) {
+                    Ok(r) => r,
+                    Err(SwapchainCreationError::ImageExtentNotSupported { .. }) => return,
+                    Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
                 };
 
-                // Begin render pipeline commands
-                builder
-                    .begin_render_pass(
-                        RenderPassBeginInfo {
-                            clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
-                            ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-                        },
-                        SubpassContents::SecondaryCommandBuffers,
-                    )
-                    .unwrap();
+                swapchain = new_swapchain;
+                // Because framebuffers contains an Arc on the old swapchain, we need to
+                // recreate framebuffers as well.
+                (framebuffers, views) =
+                    window_size_dependent_setup(&new_images, render_pass.clone(), &mut viewport);
+                recreate_swapchain = false;
+            }
 
-                // Render first draw pass
-                let mut secondary_builder = AutoCommandBufferBuilder::secondary(
-                    &command_buffer_allocator,
-                    queue.queue_family_index(),
-                    CommandBufferUsage::MultipleSubmit,
-                    CommandBufferInheritanceInfo {
-                        render_pass: Some(subpass.clone().into()),
+            let (image_index, suboptimal, acquire_future) =
+                match acquire_next_image(swapchain.clone(), None) {
+                    Ok(r) => r,
+                    Err(AcquireError::OutOfDate) => {
+                        recreate_swapchain = true;
+                        return;
+                    }
+                    Err(e) => panic!("Failed to acquire next image: {:?}", e),
+                };
+
+            if suboptimal {
+                recreate_swapchain = true;
+            }
+
+            let mut builder = AutoCommandBufferBuilder::primary(
+                &command_buffer_allocator,
+                queue.queue_family_index(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .expect("can't create command buffer builder");
+
+            builder
+                .begin_render_pass(
+                    RenderPassBeginInfo {
+                        clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
+                        ..RenderPassBeginInfo::framebuffer(
+                            framebuffers[image_index as usize].clone(),
+                        )
+                    },
+                    SubpassContents::SecondaryCommandBuffers,
+                )
+                .expect("can't begin render pass");
+
+            let mut secondary_builder = AutoCommandBufferBuilder::secondary(
+                &command_buffer_allocator,
+                queue.queue_family_index(),
+                CommandBufferUsage::MultipleSubmit,
+                CommandBufferInheritanceInfo {
+                    render_pass: Some(subpass.clone().into()),
+                    ..Default::default()
+                },
+            )
+            .expect("can't create command buffer builder");
+
+            secondary_builder
+                .push_constants(pipeline.layout().clone(), 0, push_constants)
+                .set_viewport(0, [viewport.clone()])
+                .bind_pipeline_graphics(pipeline.clone())
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Graphics,
+                    pipeline.layout().clone(),
+                    0,
+                    set.clone(),
+                )
+                .bind_vertex_buffers(0, vertex_buffer.clone())
+                .bind_index_buffer(index_buffer.clone())
+                .draw_indexed(index_buffer.len() as u32, 1, 0, 0, 0)
+                .expect("can't draw")
+            ;
+
+
+            let cb = secondary_builder.build().unwrap();
+            builder.execute_commands(cb).unwrap();
+
+            // Move on to next subpass for gui
+            builder
+                .next_subpass(SubpassContents::SecondaryCommandBuffers)
+                .unwrap();
+            // Draw gui on subpass
+            let cb = gui.draw_on_subpass_image([dimensions.width, dimensions.height]);
+            builder.execute_commands(cb).unwrap();
+
+            // Last end render pass
+            builder.end_render_pass().unwrap();
+
+            let command_buffer = builder.build().unwrap();
+            let future = previous_frame_end
+                .take()
+                .expect("can't get previous_frame_end")
+                .join(acquire_future)
+                .then_execute(queue.clone(), command_buffer)
+                .expect("can't execute command buffer")
+                .then_swapchain_present(
+                    queue.clone(),
+                    SwapchainPresentInfo::swapchain_image_index(swapchain.clone(), image_index),
+                )
+                .then_signal_fence_and_flush();
+
+            match future {
+                Ok(future) => {
+                    previous_frame_end = Some(future.boxed());
+                }
+                Err(FlushError::OutOfDate) => {
+                    recreate_swapchain = true;
+                    previous_frame_end = Some(sync::now(device.clone()).boxed());
+                }
+                Err(e) => {
+                    // panic!("Failed to flush future: {:?}", e);
+                    previous_frame_end = Some(sync::now(device.clone()).boxed());
+                }
+            }
+        }
+        _ => (),
+    });
+}
+
+fn window_size_dependent_setup(
+    images: &[Arc<SwapchainImage>],
+    render_pass: Arc<RenderPass>,
+    viewport: &mut Viewport,
+) -> (Vec<Arc<Framebuffer>>, Vec<Arc<ImageView<SwapchainImage>>>) {
+    let dimensions = images[0].dimensions().width_height();
+    viewport.dimensions = [dimensions[0] as f32, dimensions[1] as f32];
+
+    images
+        .iter()
+        .map(|image| {
+            let view = ImageView::new_default(image.clone()).expect("can't create image view");
+            (
+                Framebuffer::new(
+                    render_pass.clone(),
+                    FramebufferCreateInfo {
+                        attachments: vec![view.clone()],
                         ..Default::default()
                     },
                 )
-                .unwrap();
-
-                secondary_builder
-                    .bind_pipeline_graphics(pipeline.clone())
-                    .set_viewport(0, [viewport.clone()])
-                    .bind_vertex_buffers(0, vertex_buffer.clone())
-                    .draw(vertex_buffer.len() as u32, 1, 0, 0)
-                    .unwrap();
-
-                let cb = secondary_builder.build().unwrap();
-                builder.execute_commands(cb).unwrap();
-
-                // Move on to next subpass for gui
-                builder
-                    .next_subpass(SubpassContents::SecondaryCommandBuffers)
-                    .unwrap();
-                // Draw gui on subpass
-                let cb = gui.draw_on_subpass_image(dimensions);
-                builder.execute_commands(cb).unwrap();
-
-                // Last end render pass
-                builder.end_render_pass().unwrap();
-
-                let command_buffer = builder.build().unwrap();
-                let after_future = before_future
-                    .then_execute(queue.clone(), command_buffer)
-                    .unwrap();
-
-                let after_future = after_future.boxed();
-                // Present swapchain
-                renderer.present(after_future, true);
-            }
-            Event::MainEventsCleared => {
-                renderer.window().request_redraw();
-            }
-            _ => (),
-        }
-    });
+                .expect("can't create framebuffer"),
+                view,
+            )
+        })
+        .unzip::<_, _, Vec<_>, Vec<_>>()
+    // .collect::<Vec<_>>()
 }
