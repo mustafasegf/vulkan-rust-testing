@@ -28,9 +28,15 @@ path = "src/projection.rs"
 name = "mvp"
 path = "src/mvp.rs"
 
+[[bin]]
+name = "egui"
+path = "src/egui.rs"
+
 [dependencies]
 bytemuck = { version = "1.13.0", features = ["derive", "extern_crate_std", "min_const_generics"] }
 cgmath = "0.18.0"
+egui = "0.20.1"
+egui_winit_vulkano = "0.23.0"
 glium = "0.32.1"
 png = "0.17.7"
 rand = "0.8.5"
